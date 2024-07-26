@@ -1,0 +1,202 @@
+from flask import Flask, request, jsonify, render_template_string
+import fitz  # PyMuPDF
+import difflib  # Taxminiy string moslashuvi uchun
+import re  # Muntazam ifodalar uchun
+
+app = Flask(__name__)
+
+# Bir nechta PDF-fayllardan lug'atlarni yuklang
+def load_dictionaries(pdf_paths):
+    combined_dictionary = set()
+    for pdf_path in pdf_paths:
+        doc = fitz.open(pdf_path)
+        for page in doc:
+            text = page.get_text()
+            words = re.findall(r'\b\w+\'?\w*\b', text.lower())  # Extract words including apostrophes
+            combined_dictionary.update(words)
+    return combined_dictionary
+
+# Yuklash uchun PDF fayllar ro'yxati
+PDF_FILES = [
+    'dictionary.pdf',
+    'dictionary2.pdf',
+    'dictionary3.pdf',
+    'dictionary4.pdf',
+    
+]
+
+# Barcha lug'atlarni yuklang
+DICTIONARY = load_dictionaries(PDF_FILES)
+
+# HTML tarkibi
+HTML_CONTENT = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>O'zbekcha so'zlarni tuzatuvchi</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f4f4f4;
+            margin: 0;
+        }
+        .container {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 400px;
+            text-align: center;
+        }
+        textarea {
+            width: calc(100% - 22px);
+            height: 150px;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: none;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background-color: #007bff;
+            color: #fff;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .result {
+            margin-top: 20px;
+            text-align: left;
+        }
+        .original-text, .corrected-text {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #f9f9f9;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>O'zbekcha so'zlarni tuzatuvchi</h1>
+        <textarea id="textInput" placeholder="Matnni notoʻgʻri soʻzlar bilan kiriting..."></textarea>
+        <button onclick="checkText()">Tekshirish</button>
+        <div id="result" class="result">
+            <div id="originalText" class="original-text"></div>
+            <div id="correctedText" class="corrected-text"></div>
+        </div>
+    </div>
+    <script>
+        function checkText() {
+            const text = document.getElementById('textInput').value;
+            fetch('/correct', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const originalTextDiv = document.getElementById('originalText');
+                const correctedTextDiv = document.getElementById('correctedText');
+                
+                originalTextDiv.textContent = `Asl matn:\n${data.original_text || ''}`;
+                correctedTextDiv.textContent = `Tuzatilgan matn:\n${data.corrected_text || 'Error: ' + data.error}`;
+            });
+        }
+    </script>
+</body>
+</html>
+'''
+
+def find_closest_words(word, dictionary, n=5):
+   
+    """
+    Lug‘atdan berilgan so‘zga eng yaqin so‘zlarni taxminiy moslashtirish yordamida toping.
+    :param so'zi: Tekshirish uchun so'z
+    :param lug'ati: Izlash uchun lug'at
+    :param n: Qaytish uchun eng yaqin mosliklar soni
+    :qaytish: Eng yaqin so'zlar ro'yxati
+    """
+    closest_matches = difflib.get_close_matches(word, dictionary, n=n, cutoff=0.7)
+    return closest_matches
+
+def correct_special_chars(word):
+    """
+    Umumiy naqshlar asosida so'zlardagi maxsus belgilarni to'g'rilash.
+    
+    :param so'zi: Tuzatish uchun so'z
+    :qaytish: Tuzatilgan so'z
+    """
+
+    # Tuzatish naqshlariga misol
+    corrections = {
+        "o`g": "o'g",  # "o`g"ni "o'g"ga tuzatish
+        "g`": "g'",    # "g`" ni "g'"ga tuzatish
+        # Zarur bo'lganda ko'proq naqsh qo'shing
+    }
+    
+    for wrong, right in corrections.items():
+        if wrong in word:
+            return word.replace(wrong, right)
+    return word
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_CONTENT)
+
+@app.route('/correct', methods=['POST'])
+def correct_text():
+    data = request.json
+    text = data.get('text', '')
+    
+    original_text = text
+    words = text.split()
+    corrected_words = []
+    
+    for word in words:
+        cleaned_word = re.sub(r'[^\w\'`]', '', word).lower()  # Apostrof va orqa belgilardan tashqari tinish belgilarini olib tashlang
+        special_char_corrected_word = correct_special_chars(cleaned_word)
+        
+        if special_char_corrected_word in DICTIONARY:
+            corrected_words.append(word)  #Agar to'g'ri bo'lsa, asl so'zni saqlang
+        else:
+            # Lug'atdan eng yaqin so'zlarni toping
+            closest_words = find_closest_words(special_char_corrected_word, DICTIONARY)
+            if closest_words:
+                corrected_word = ', '.join(closest_words)
+            else:
+                # Bir harfli so'zlarni yoki juda qisqa so'zlarni ishlating
+                if len(special_char_corrected_word) == 1:
+                    # Provide suggestions for single-letter words
+                    closest_words = find_closest_words(special_char_corrected_word, DICTIONARY, n=10)  # Takliflar chegarasini oshiring
+                    if closest_words:
+                        corrected_word = ', '.join(closest_words)
+                    else:
+                        corrected_word = word  # Agar takliflar bo'lmasa, asl so'zni saqlang
+                else:
+                    corrected_word = word  # Agar takliflar bo'lmasa, asl so'zni saqlang
+            corrected_words.append(corrected_word)
+    
+    corrected_text = ' '.join(corrected_words)
+    
+    if corrected_text.strip():
+        return jsonify({'original_text': original_text, 'corrected_text': corrected_text})
+    else:
+        return jsonify({'original_text': original_text, 'error': 'No valid words found in dictionary'})
+
+if __name__ == '__main__':
+    app.run(debug=True)
